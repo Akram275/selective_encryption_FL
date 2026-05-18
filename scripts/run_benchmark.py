@@ -178,6 +178,11 @@ def main():
         num_clients=cfg['federated']['num_clients'],
         samples_per_client=cfg['federated']['samples_per_client']
     )
+    client_test_sets = create_clients(
+        x_test, y_test,
+        num_clients=cfg['federated']['num_clients'],
+        samples_per_client=None,
+    )
     client_sizes = [len(client_x) for client_x, _ in clients]
     total_client_samples = sum(client_sizes)
     results_dir = os.path.join(os.path.dirname(__file__), '../results/benchmarks')
@@ -263,6 +268,16 @@ def main():
                 )
             client_train_time = time.perf_counter() - client_train_start
             print(f"    [Client {i+1}] Local training finished in {client_train_time:.2f}s.")
+
+            client_test_loss, client_test_acc = local_model.evaluate(
+                client_test_sets[i][0],
+                client_test_sets[i][1],
+                verbose=0,
+            )
+            print(
+                f"    [Client {i+1}] Local test evaluation: "
+                f"Acc={client_test_acc:.4f}, Loss={client_test_loss:.4f}"
+            )
 
             # Hybrid selective-encryption payload construction on the local update.
             flat_local, _ = flatten_weights(local_model.get_weights())

@@ -11,10 +11,10 @@ crypto:
   scale_power: 40
 selective_encryption:
   num_windows: 1
-  clipping_threshold: 10.0
-  dp_sigma: 0.0
+  clipping_threshold: 5.0
+  dp_sigma: 1.0
   dp_learning_rate: 0.01
-  microbatch_size: 16
+  microbatch_size: 64
   selection_scope: all
   stats_num_samples: 100
   stats_batch_size: 16
