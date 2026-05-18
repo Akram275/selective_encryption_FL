@@ -120,7 +120,7 @@ def compute_dp_privacy(clipping_threshold, dp_sigma, delta=1e-5):
     return epsilon, delta
 
 
-def print_mode_summary(mode, plain_b, enc_b, dp_b, hybrid_b, fhe_coordinates, total_coordinates, k_stars, selective_cfg):
+def print_mode_summary(mode, plain_b, enc_b, dp_b, hybrid_b, fhe_coordinates, total_coordinates, num_ciphertexts, selective_cfg):
     if mode == 'non_private':
         payload_b = plain_b
         payload_label = 'Non-private client payload'
@@ -135,12 +135,13 @@ def print_mode_summary(mode, plain_b, enc_b, dp_b, hybrid_b, fhe_coordinates, to
         payload_label = 'Hybrid client payload'
 
     expansion_factor = 0.0 if plain_b == 0 else payload_b / plain_b
+    ciphertext_text = '' if num_ciphertexts == 0 else f', {num_ciphertexts} ciphertexts'
 
     print(
         f"    [Metrics] Plaintext model size: {plain_b / 1024:.2f} KB "
         f"({total_coordinates} parameters) | "
         f"{payload_label}: {payload_b / 1024:.2f} KB "
-        f"({expansion_factor:.2f}x)"
+        f"({expansion_factor:.2f}x{ciphertext_text})"
     )
 
     if mode in {'full_dp', 'hybrid'}:
@@ -314,6 +315,7 @@ def main():
             dp_coordinate_counts.append(dp_coordinates)
 
             if i == 0:
+                num_ciphertexts = sum(len(payload['chunks']) for payload in encrypted_payloads)
                 print_mode_summary(
                     benchmark_mode,
                     plain_b,
@@ -322,7 +324,7 @@ def main():
                     hybrid_b,
                     fhe_coordinates,
                     len(mask),
-                    selected_indices,
+                    num_ciphertexts,
                     selective_cfg,
                 )
 

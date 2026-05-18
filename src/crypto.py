@@ -64,8 +64,51 @@ def build_selection_mask(length, selected_indices):
         mask[np.asarray(selected_indices, dtype=int)] = True
     return mask
 
+
+def _window_sums_numpy(abs_g, window_size):
+    if len(abs_g) == 0:
+        return np.array([], dtype=np.float64)
+    if len(abs_g) <= window_size:
+        return np.array([float(np.sum(abs_g))], dtype=np.float64)
+
+    prefix = np.concatenate(([0.0], np.cumsum(abs_g, dtype=np.float64)))
+    return prefix[window_size:] - prefix[:-window_size]
+
+
+def _select_top_window_starts_numpy(abs_g, num_windows, window_size):
+    if num_windows <= 0 or len(abs_g) == 0:
+        return np.array([], dtype=int)
+    if len(abs_g) <= window_size:
+        return np.array([0], dtype=int)
+
+    remaining_scores = _window_sums_numpy(abs_g, window_size)
+    selected_starts = []
+
+    for _ in range(min(num_windows, len(remaining_scores))):
+        best_start = int(np.argmax(remaining_scores))
+        if not np.isfinite(remaining_scores[best_start]):
+            break
+        selected_starts.append(best_start)
+
+        overlap_start = max(0, best_start - window_size + 1)
+        overlap_end = min(len(remaining_scores), best_start + window_size)
+        remaining_scores[overlap_start:overlap_end] = -np.inf
+
+    return np.sort(np.asarray(selected_starts, dtype=int))
+
+
+def _window_starts_to_indices(window_starts, total_length, window_size):
+    selected_indices = []
+    for start in np.asarray(window_starts, dtype=int):
+        end = min(start + window_size, total_length)
+        selected_indices.extend(range(start, end))
+    if not selected_indices:
+        return np.array([], dtype=int)
+    return np.asarray(sorted(set(selected_indices)), dtype=int)
+
+
 def select_top_coordinate_indices(g, num_windows, poly_mod_degree):
-    """Selects the strongest coordinates that fit into the ciphertext budget."""
+    """Selects contiguous windows with the largest absolute-magnitude sums."""
     if num_windows <= 0 or len(g) == 0:
         return np.array([], dtype=int)
 
@@ -73,17 +116,20 @@ def select_top_coordinate_indices(g, num_windows, poly_mod_degree):
     if slots_per_ciphertext <= 0:
         raise ValueError("poly modulus degree must provide at least one CKKS slot")
 
-    num_selected = min(len(g), num_windows * slots_per_ciphertext)
-    if num_selected == len(g):
+    if num_windows * slots_per_ciphertext >= len(g):
         return np.arange(len(g), dtype=int)
 
-    abs_g = np.abs(g)
-    top_indices = np.argpartition(-abs_g, num_selected - 1)[:num_selected]
-    return np.sort(top_indices.astype(int))
+    abs_g = np.abs(np.asarray(g, dtype=np.float64))
+    window_starts = _select_top_window_starts_numpy(
+        abs_g,
+        num_windows=num_windows,
+        window_size=slots_per_ciphertext,
+    )
+    return _window_starts_to_indices(window_starts, len(abs_g), slots_per_ciphertext)
 
 
 def select_top_coordinate_indices_tensor(g, num_windows, poly_mod_degree):
-    """TensorFlow variant of top-coordinate selection for the ciphertext budget."""
+    """TensorFlow variant of contiguous highest-sum window selection."""
     if num_windows <= 0:
         return tf.zeros([0], dtype=tf.int32)
 
@@ -99,12 +145,17 @@ def select_top_coordinate_indices_tensor(g, num_windows, poly_mod_degree):
     if total_coords == 0:
         return tf.zeros([0], dtype=tf.int32)
 
-    num_selected = min(total_coords, num_windows * slots_per_ciphertext)
-    if num_selected == total_coords:
+    if num_windows * slots_per_ciphertext >= total_coords:
         return tf.range(total_coords, dtype=tf.int32)
 
-    _, top_indices = tf.math.top_k(tf.abs(g), k=num_selected, sorted=False)
-    return tf.sort(tf.cast(top_indices, tf.int32))
+    abs_g = tf.abs(g).numpy().astype(np.float64)
+    window_starts = _select_top_window_starts_numpy(
+        abs_g,
+        num_windows=num_windows,
+        window_size=slots_per_ciphertext,
+    )
+    selected_indices = _window_starts_to_indices(window_starts, total_coords, slots_per_ciphertext)
+    return tf.convert_to_tensor(selected_indices, dtype=tf.int32)
 
 def apply_hybrid_mechanism_multi(g, num_windows, poly_mod_degree, C, sigma, selector_vector=None):
     """Encrypts top coordinates and applies DP to the remaining coordinates."""
