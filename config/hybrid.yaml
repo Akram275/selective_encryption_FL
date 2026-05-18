@@ -1,0 +1,21 @@
+benchmark:
+  mode: hybrid
+federated:
+  rounds: 10
+  local_epochs: 1
+  num_clients: 3
+  batch_size: 128
+  samples_per_client:
+crypto:
+  poly_modulus_degree: 8192 #2^13 -> 4096 available slots
+  scale_power: 40
+selective_encryption:
+  num_windows: 1
+  clipping_threshold: 10.0
+  dp_sigma: 0.0
+  dp_learning_rate: 0.01
+  microbatch_size: 16
+  selection_scope: all
+  stats_num_samples: 100
+  stats_batch_size: 16
+  coordinate_plot_frequency: 0

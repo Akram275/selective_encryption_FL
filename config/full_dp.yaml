@@ -1,0 +1,18 @@
+benchmark:
+  mode: full_dp
+federated:
+  rounds: 10
+  local_epochs: 2
+  num_clients: 3
+  samples_per_client:
+crypto:
+  poly_modulus_degree: 8192
+  scale_power: 40
+selective_encryption:
+  num_windows: 0
+  clipping_threshold: 0.1
+  dp_sigma: 0.1
+  dp_learning_rate: 0.01
+  stats_num_samples: 0
+  stats_batch_size: 0
+  coordinate_plot_frequency: 0
