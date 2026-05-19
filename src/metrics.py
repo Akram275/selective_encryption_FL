@@ -30,6 +30,9 @@ def init_benchmark_logging(base_dir, cfg, client_sizes, config_path=None):
     """Creates timestamped CSV files for benchmark runs and writes static metadata."""
     benchmark_mode = cfg.get("benchmark", {}).get("mode", "hybrid")
     run_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{benchmark_mode}"
+    if benchmark_mode == 'hybrid':
+        num_windows = cfg.get("selective_encryption", {}).get("num_windows", 0)
+        run_id = f"{run_id}_{num_windows}_windows"
     run_dir = os.path.join(base_dir, run_id)
     os.makedirs(run_dir, exist_ok=True)
 
