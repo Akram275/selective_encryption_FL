@@ -1,5 +1,7 @@
 benchmark:
   mode: hybrid
+model:
+  name: lenet
 federated:
   rounds: 10
   local_epochs: 1

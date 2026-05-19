@@ -1,5 +1,7 @@
 benchmark:
   mode: non_private
+model:
+  name: lenet
 federated:
   rounds: 10
   local_epochs: 2

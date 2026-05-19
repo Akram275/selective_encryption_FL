@@ -11,7 +11,7 @@ import numpy as np
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from src.data_loader import load_cifar10, create_clients
-from src.models import build_cnn_model
+from src.models import build_model
 from src.crypto import init_ckks_context, flatten_weights, encrypt_selected_update, select_top_coordinate_indices, unflatten_weights
 from src.federated import scale_mixed_update, aggregate_mixed_updates, decrypt_mixed_update
 from src.gradient_utils import estimate_gradient_statistics, train_with_dp_sgd, train_with_hybrid_selective_dp
@@ -39,6 +39,9 @@ def load_config(config_path):
 
     cfg.setdefault('benchmark', {})
     cfg['benchmark'].setdefault('mode', 'hybrid')
+
+    cfg.setdefault('model', {})
+    cfg['model'].setdefault('name', 'lenet')
 
     cfg.setdefault('federated', {})
     cfg['federated'].setdefault('rounds', 10)
@@ -168,6 +171,7 @@ def main():
     coordinate_plot_frequency = selective_cfg.get('coordinate_plot_frequency', 0)
 
     print(f"[Init] Setting up {benchmark_mode} benchmark from {config_path}...")
+    print(f"[Init] Using model architecture: {cfg['model']['name']}")
     context = init_ckks_context(
         poly_mod_degree=cfg['crypto']['poly_modulus_degree'],
         scale_power=cfg['crypto']['scale_power']
@@ -191,7 +195,7 @@ def main():
     coordinate_plot_dir = os.path.join(benchmark_log['run_dir'], 'coordinate_stats')
     print(f"[Metrics] Saving benchmark CSVs under {benchmark_log['run_dir']}")
 
-    global_model = build_cnn_model()
+    global_model = build_model(cfg['model']['name'])
     initial_weights = global_model.get_weights()
     _, global_weights_shapes = flatten_weights(initial_weights)
 
@@ -210,7 +214,7 @@ def main():
 
         for i in range(len(clients)):
             print(f"  Training loop invocation for node participant #{i+1}...")
-            local_model = build_cnn_model()
+            local_model = build_model(cfg['model']['name'])
             local_model.set_weights(global_model.get_weights())
             print(f"    [Client {i+1}] Loaded global model state with {client_sizes[i]} local samples.")
 

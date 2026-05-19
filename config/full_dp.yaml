@@ -1,5 +1,7 @@
 benchmark:
   mode: full_dp
+model:
+  name: lenet
 federated:
   rounds: 10
   local_epochs: 2
@@ -10,8 +12,8 @@ crypto:
   scale_power: 40
 selective_encryption:
   num_windows: 0
-  clipping_threshold: 0.1
-  dp_sigma: 0.1
+  clipping_threshold: 1.0
+  dp_sigma: 1.0
   dp_learning_rate: 0.01
   stats_num_samples: 0
   stats_batch_size: 0
