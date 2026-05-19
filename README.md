@@ -60,7 +60,7 @@ python3 metrics/plot_benchmarks.py --run-id <run_directory_name>
 
 These plots are saved under the selected run directory in `plots/` by default.
 
-Generate a comparative convergence chart across multiple runs:
+Generate a comparative convergence chart across multiple runs (with example runs) :
 
 ```bash
 python3 metrics/plot_comparative_benchmarks.py \
@@ -71,7 +71,7 @@ python3 metrics/plot_comparative_benchmarks.py \
 	results/benchmarks/20260519_103700_full_fhe/round_metrics.csv
 ```
 
-Generate a comparative cumulative transferred-data chart across multiple runs:
+Generate a comparative cumulative transferred-data chart across multiple runs (with example runs):
 
 ```bash
 python3 metrics/plot_comparative_transferred_data.py \
