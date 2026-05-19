@@ -46,7 +46,7 @@ Benchmark outputs are written under `results/benchmarks/` in timestamped run dir
 
 ## Plot Saved Results
 
-Generate plots from the latest run:
+Generate the standard per-run plots from the latest run:
 
 ```bash
 python3 metrics/plot_benchmarks.py
@@ -58,12 +58,38 @@ Plot a specific run:
 python3 metrics/plot_benchmarks.py --run-id <run_directory_name>
 ```
 
-Plots are saved under the selected run directory in `plots/` by default.
+These plots are saved under the selected run directory in `plots/` by default.
+
+Generate a comparative convergence chart across multiple runs:
+
+```bash
+python3 metrics/plot_comparative_benchmarks.py \
+	--run-ids \
+	results/benchmarks/20260519_100822_hybrid_1/round_metrics.csv \
+	results/benchmarks/20260519_101654_full_dp/round_metrics.csv \
+	results/benchmarks/20260519_112339_hybrid_3_windows/round_metrics.csv \
+	results/benchmarks/20260519_103700_full_fhe/round_metrics.csv
+```
+
+Generate a comparative cumulative transferred-data chart across multiple runs:
+
+```bash
+python3 metrics/plot_comparative_transferred_data.py \
+	--run-ids \
+	results/benchmarks/20260519_100822_hybrid_1/round_metrics.csv \
+	results/benchmarks/20260519_101654_full_dp/round_metrics.csv \
+	results/benchmarks/20260519_112339_hybrid_3_windows/round_metrics.csv \
+	results/benchmarks/20260519_103700_full_fhe/round_metrics.csv
+```
+
+Both comparative scripts also accept run directory names or run directory paths instead of `round_metrics.csv` paths. By default, they save outputs under `results/benchmarks/comparisons/`.
 
 ## Project Layout
 
 - `scripts/run_benchmark.py`: main benchmark entrypoint
 - `src/`: training, privacy, crypto, aggregation, metrics, and model code
 - `config/`: benchmark configurations
-- `metrics/plot_benchmarks.py`: plotting utility for CSV benchmark outputs
+- `metrics/plot_benchmarks.py`: single-run plotting utility for CSV benchmark outputs
+- `metrics/plot_comparative_benchmarks.py`: comparative convergence plotting across runs
+- `metrics/plot_comparative_transferred_data.py`: comparative cumulative transferred-data plotting across runs
 - `results/`: saved benchmark runs and generated plots
