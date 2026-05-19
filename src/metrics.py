@@ -28,7 +28,8 @@ def calculate_mixed_serialized_sizes(encrypted_payloads, dp_vector, raw_weights_
 
 def init_benchmark_logging(base_dir, cfg, client_sizes, config_path=None):
     """Creates timestamped CSV files for benchmark runs and writes static metadata."""
-    run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    benchmark_mode = cfg.get("benchmark", {}).get("mode", "hybrid")
+    run_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{benchmark_mode}"
     run_dir = os.path.join(base_dir, run_id)
     os.makedirs(run_dir, exist_ok=True)
 
@@ -59,7 +60,7 @@ def init_benchmark_logging(base_dir, cfg, client_sizes, config_path=None):
         ],
         {
             "run_id": run_id,
-            "benchmark_mode": cfg.get("benchmark", {}).get("mode", "hybrid"),
+            "benchmark_mode": benchmark_mode,
             "config_path": config_path or "",
             "rounds": cfg["federated"]["rounds"],
             "local_epochs": cfg["federated"]["local_epochs"],
