@@ -136,47 +136,38 @@ def plot_comparative_convergence(run_dirs, output_dir):
     output_dir.mkdir(parents=True, exist_ok=True)
 
     fig, axes = plt.subplots(1, 2, figsize=(13, 6.6), sharex=False)
-    title_fontsize = 17
     axis_fontsize = 14
     tick_fontsize = 12
     legend_fontsize = 12
     color_cycle = plt.rcParams['axes.prop_cycle'].by_key().get('color', [])
-    markers = ['o', 's', '^', 'd', 'x', 'P', 'v', '*']
 
     labels = []
     for run_index, run_dir in enumerate(run_dirs):
         label = build_run_label(run_dir)
         series = load_round_series(run_dir)
         color = color_cycle[run_index % len(color_cycle)] if color_cycle else None
-        marker = markers[run_index % len(markers)]
 
         axes[0].plot(
             series['rounds'],
             series['accuracy'],
             label=label,
             color=color,
-            marker=marker,
             linewidth=2.2,
-            markersize=6,
         )
         axes[1].plot(
             series['rounds'],
             series['loss'],
             label=label,
             color=color,
-            marker=marker,
             linewidth=2.2,
-            markersize=6,
         )
         labels.append(label)
 
-    axes[0].set_title('Comparative Accuracy Convergence', fontsize=title_fontsize)
     axes[0].set_xlabel('Round', fontsize=axis_fontsize)
     axes[0].set_ylabel('Accuracy', fontsize=axis_fontsize)
     axes[0].grid(True, alpha=0.3)
     axes[0].tick_params(axis='both', labelsize=tick_fontsize)
 
-    axes[1].set_title('Comparative Loss Convergence', fontsize=title_fontsize)
     axes[1].set_xlabel('Round', fontsize=axis_fontsize)
     axes[1].set_ylabel('Loss', fontsize=axis_fontsize)
     axes[1].grid(True, alpha=0.3)
@@ -193,8 +184,7 @@ def plot_comparative_convergence(run_dirs, output_dir):
         frameon=False,
         fontsize=legend_fontsize,
     )
-    fig.suptitle('Benchmark Convergence Comparison', y=0.98, fontsize=18)
-    fig.tight_layout(rect=[0.0, 0.12, 1.0, 0.94])
+    fig.tight_layout(rect=[0.0, 0.12, 1.0, 1.0])
 
     figure_path = output_dir / 'comparative_convergence.png'
     fig.savefig(figure_path, dpi=160, bbox_inches='tight')
