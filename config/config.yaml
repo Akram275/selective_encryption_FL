@@ -1,10 +1,16 @@
 benchmark:
   mode: hybrid
 federated:
-  rounds: 10
+  rounds: 100
   local_epochs: 2
   num_clients: 3
   samples_per_client:
+  server_learning_rate: 0.01
+  learning_rate_decay:
+    type: constant
+    rate: 1.0
+    steps: 1
+    min_learning_rate: 0.0
 crypto:
   poly_modulus_degree: 8192
   scale_power: 40

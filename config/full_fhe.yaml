@@ -3,10 +3,17 @@ benchmark:
 model:
   name: lenet
 federated:
-  rounds: 10
+  rounds: 500
   local_epochs: 3
   num_clients: 3
+  batch_size: 256
   samples_per_client:
+  server_learning_rate: 0.1
+  learning_rate_decay:
+    type: step
+    rate: 0.5 # 1.0 means no decay
+    steps: 100  # number of rounds after which to apply decay
+    min_learning_rate: 0.0
 crypto:
   poly_modulus_degree: 8192
   scale_power: 40
