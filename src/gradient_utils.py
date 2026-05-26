@@ -124,6 +124,199 @@ def _compute_microbatch_gradient_tensor(model, x_batch, y_batch, loss_fn, microb
     return tf.stack(microbatch_grads, axis=0)
 
 
+def _prepare_batch_tensors(x_batch, y_batch):
+    return (
+        tf.cast(x_batch, tf.float32),
+        tf.reshape(tf.cast(y_batch, tf.int64), [-1]),
+    )
+
+
+def _summarize_gradient_tensor(gradient_tensor):
+    gradient_tensor = tf.cast(gradient_tensor, tf.float64)
+    grad_mean = tf.reduce_mean(gradient_tensor, axis=0)
+    grad_mean_abs = tf.reduce_mean(tf.abs(gradient_tensor), axis=0)
+    grad_var = tf.maximum(
+        tf.reduce_mean(tf.square(gradient_tensor), axis=0) - tf.square(grad_mean),
+        tf.constant(0.0, dtype=tf.float64),
+    )
+    return {
+        'num_samples': int(gradient_tensor.shape[0]),
+        'mean': grad_mean.numpy(),
+        'mean_abs': grad_mean_abs.numpy(),
+        'variance': grad_var.numpy(),
+    }
+
+
+def _flatten_trainable_variable_values(model):
+    flattened_values = []
+    for variable in model.trainable_variables:
+        flattened_values.append(tf.reshape(tf.cast(variable, tf.float64), [-1]))
+    if not flattened_values:
+        return np.array([], dtype=np.float64)
+    return tf.concat(flattened_values, axis=0).numpy()
+
+
+def compute_batch_gradient(model, x_batch, y_batch):
+    """Computes the mean gradient for a single client batch."""
+    x_batch, y_batch = _prepare_batch_tensors(x_batch, y_batch)
+    loss_fn = tf.keras.losses.SparseCategoricalCrossentropy(
+        reduction=tf.keras.losses.Reduction.NONE
+    )
+    mean_gradient = _compute_mean_gradient_tensor(model, x_batch, y_batch, loss_fn)
+    return {
+        'gradient': tf.cast(mean_gradient, tf.float64).numpy(),
+        'selected_indices': np.array([], dtype=int),
+        'batch_windows': [],
+        **_summarize_gradient_tensor(tf.expand_dims(mean_gradient, axis=0)),
+    }
+
+
+def compute_dp_sgd_batch_gradient(
+    model,
+    x_batch,
+    y_batch,
+    clipping_norm,
+    noise_std,
+    learning_rate=0.01,
+):
+    """Computes one strict DP-SGD client gradient from a single optimizer step."""
+    if clipping_norm <= 0:
+        raise ValueError("clipping_norm must be positive for DP-SGD")
+    if noise_std < 0:
+        raise ValueError("noise_std must be non-negative for DP-SGD")
+    if learning_rate <= 0:
+        raise ValueError("learning_rate must be positive for DP-SGD")
+
+    try:
+        from tensorflow_privacy.privacy.optimizers.dp_optimizer_keras_vectorized import (
+            VectorizedDPKerasSGDOptimizer,
+        )
+    except ImportError as exc:
+        raise ImportError(
+            "tensorflow-privacy is required for strict per-example DP-SGD training"
+        ) from exc
+
+    x_batch, y_batch = _prepare_batch_tensors(x_batch, y_batch)
+    loss_fn = tf.keras.losses.SparseCategoricalCrossentropy(
+        reduction=tf.keras.losses.Reduction.NONE
+    )
+    noise_multiplier = noise_std / clipping_norm
+    optimizer = VectorizedDPKerasSGDOptimizer(
+        l2_norm_clip=clipping_norm,
+        noise_multiplier=noise_multiplier,
+        num_microbatches=None,
+        learning_rate=learning_rate,
+    )
+    model.compile(
+        optimizer=optimizer,
+        loss=loss_fn,
+        metrics=['accuracy'],
+    )
+
+    before_update = _flatten_trainable_variable_values(model)
+    model.train_on_batch(x_batch, y_batch)
+    after_update = _flatten_trainable_variable_values(model)
+    mean_gradient = (before_update - after_update) / learning_rate
+
+    return {
+        'gradient': np.asarray(mean_gradient, dtype=np.float64),
+        'selected_indices': np.array([], dtype=int),
+        'batch_windows': [],
+        **_summarize_gradient_tensor(tf.expand_dims(tf.convert_to_tensor(mean_gradient, dtype=tf.float64), axis=0)),
+    }
+
+
+def compute_hybrid_selective_batch_gradient(
+    model,
+    x_batch,
+    y_batch,
+    clipping_norm,
+    noise_std,
+    num_windows,
+    poly_mod_degree,
+    microbatch_size,
+):
+    """Computes one hybrid selective-DP client gradient from a single sampled batch."""
+    if clipping_norm <= 0:
+        raise ValueError("clipping_norm must be positive for hybrid DP training")
+    if noise_std < 0:
+        raise ValueError("noise_std must be non-negative for hybrid DP training")
+    if microbatch_size <= 0:
+        raise ValueError("microbatch_size must be positive for hybrid DP training")
+
+    x_batch, y_batch = _prepare_batch_tensors(x_batch, y_batch)
+    loss_fn = tf.keras.losses.SparseCategoricalCrossentropy(
+        reduction=tf.keras.losses.Reduction.NONE
+    )
+    microbatch_grads = _compute_microbatch_gradient_tensor(
+        model,
+        x_batch,
+        y_batch,
+        loss_fn,
+        microbatch_size=microbatch_size,
+    )
+    total_params = int(sum(np.prod(variable.shape) for variable in model.trainable_variables))
+    all_indices_tf = tf.range(total_params, dtype=tf.int32)
+
+    microbatch_abs = tf.abs(microbatch_grads)
+    batch_mean_abs = tf.reduce_mean(microbatch_abs, axis=0)
+    batch_selected_indices_tf = select_top_coordinate_indices_tensor(
+        batch_mean_abs,
+        num_windows=num_windows,
+        poly_mod_degree=poly_mod_degree,
+    )
+    batch_selected_indices = batch_selected_indices_tf.numpy().astype(int)
+
+    selected_mask_tf = tf.scatter_nd(
+        tf.expand_dims(batch_selected_indices_tf, axis=1),
+        tf.ones_like(batch_selected_indices_tf, dtype=tf.bool),
+        [total_params],
+    )
+    dp_indices_tf = tf.boolean_mask(all_indices_tf, tf.logical_not(selected_mask_tf))
+
+    combined_grad = tf.reduce_mean(microbatch_grads, axis=0)
+
+    if tf.size(dp_indices_tf) > 0:
+        dp_batch_grads = tf.gather(microbatch_grads, dp_indices_tf, axis=1)
+        l2_norms = tf.norm(dp_batch_grads, axis=1, keepdims=True)
+        scaling = tf.minimum(
+            1.0,
+            clipping_norm / tf.maximum(l2_norms, tf.constant(1e-12, dtype=tf.float32)),
+        )
+        clipped_dp_grads = dp_batch_grads * scaling
+        noisy_dp_grad = tf.reduce_mean(clipped_dp_grads, axis=0)
+        if noise_std > 0:
+            noisy_dp_grad += tf.random.normal(
+                shape=tf.shape(noisy_dp_grad),
+                mean=0.0,
+                stddev=noise_std,
+                dtype=tf.float32,
+            )
+        combined_grad = tf.tensor_scatter_nd_update(
+            combined_grad,
+            tf.expand_dims(dp_indices_tf, axis=1),
+            noisy_dp_grad,
+        )
+
+    if tf.size(batch_selected_indices_tf) > 0:
+        fhe_grad = tf.reduce_mean(
+            tf.gather(microbatch_grads, batch_selected_indices_tf, axis=1),
+            axis=0,
+        )
+        combined_grad = tf.tensor_scatter_nd_update(
+            combined_grad,
+            tf.expand_dims(batch_selected_indices_tf, axis=1),
+            fhe_grad,
+        )
+
+    return {
+        'gradient': tf.cast(combined_grad, tf.float64).numpy(),
+        'selected_indices': batch_selected_indices,
+        'batch_windows': [batch_selected_indices],
+        **_summarize_gradient_tensor(microbatch_grads),
+    }
+
+
 def estimate_gradient_statistics(model, x, y, max_samples=64, batch_size=16, seed=42, selection_scope='all'):
     """Estimates per-coordinate gradient statistics from a bounded client-side sample."""
     if len(x) == 0:
