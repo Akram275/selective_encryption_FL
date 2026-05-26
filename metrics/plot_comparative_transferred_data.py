@@ -163,18 +163,15 @@ def plot_comparative_transferred_data(run_dirs, output_dir):
     output_dir.mkdir(parents=True, exist_ok=True)
 
     fig, ax = plt.subplots(figsize=(10.8, 6.6))
-    title_fontsize = 17
     axis_fontsize = 14
     tick_fontsize = 12
     legend_fontsize = 12
     color_cycle = plt.rcParams['axes.prop_cycle'].by_key().get('color', [])
-    markers = ['o', 's', '^', 'd', 'x', 'P', 'v', '*']
 
     series_by_run = []
     for run_index, run_dir in enumerate(run_dirs):
         series = load_transfer_series(run_dir)
         color = color_cycle[run_index % len(color_cycle)] if color_cycle else None
-        marker = markers[run_index % len(markers)]
         cumulative_mb = [value / (1024.0 ** 2) for value in series['cumulative_bytes']]
 
         ax.plot(
@@ -182,9 +179,7 @@ def plot_comparative_transferred_data(run_dirs, output_dir):
             cumulative_mb,
             label=series['label'],
             color=color,
-            marker=marker,
             linewidth=2.3,
-            markersize=6,
         )
 
         if series['rounds']:
@@ -200,7 +195,6 @@ def plot_comparative_transferred_data(run_dirs, output_dir):
 
         series_by_run.append(series)
 
-    ax.set_title('Comparative Transferred Data During Training', fontsize=title_fontsize)
     ax.set_xlabel('Round', fontsize=axis_fontsize)
     ax.set_ylabel('Cumulative transferred payload (MB)', fontsize=axis_fontsize)
     ax.grid(True, alpha=0.3)
