@@ -33,6 +33,31 @@ Run the benchmark with a chosen config:
 python3 scripts/run_benchmark.py --config config/hybrid.yaml
 ```
 
+The benchmark loop now uses FedSGD-style communication: each round, every client samples one local batch, computes a communicated gradient payload for that batch, the server averages those client gradients, applies the server update, and the next round starts from the updated model.
+
+Key config knobs for this flow:
+
+- `federated.rounds`: number of communicated FedSGD batches
+- `federated.batch_size`: client batch size sampled each round
+- `federated.server_learning_rate`: learning rate used when the server applies the averaged gradient
+- `federated.learning_rate_decay.type`: one of `constant`, `step`, or `exponential`
+- `federated.learning_rate_decay.rate`: multiplicative decay factor
+- `federated.learning_rate_decay.steps`: decay interval for `step`, or smoothing divisor for `exponential`
+- `federated.learning_rate_decay.min_learning_rate`: lower bound for the scheduled server learning rate
+- `selective_encryption.microbatch_size`: micro-batch size used by the hybrid gradient statistics path
+
+Example decay configuration:
+
+```yaml
+federated:
+	server_learning_rate: 0.01
+	learning_rate_decay:
+		type: step
+		rate: 0.95
+		steps: 10
+		min_learning_rate: 0.001
+```
+
 Examples:
 
 ```bash
