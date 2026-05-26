@@ -6,15 +6,16 @@ import argparse
 import math
 import yaml
 import numpy as np
+import tensorflow as tf
 
 # Append root directory path safely to pick up local src modules
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from src.data_loader import load_cifar10, create_clients
 from src.models import build_model
-from src.crypto import init_ckks_context, flatten_weights, encrypt_selected_update, select_top_coordinate_indices, unflatten_weights
+from src.crypto import init_ckks_context, encrypt_selected_update
 from src.federated import scale_mixed_update, aggregate_mixed_updates, decrypt_mixed_update
-from src.gradient_utils import estimate_gradient_statistics, train_with_dp_sgd, train_with_hybrid_selective_dp
+from src.gradient_utils import compute_batch_gradient, compute_dp_sgd_batch_gradient, compute_hybrid_selective_batch_gradient
 from src.metrics import calculate_mixed_serialized_sizes, init_benchmark_logging, log_round_metrics, log_client_metrics, plot_coordinate_stats
 
 
@@ -44,11 +45,17 @@ def load_config(config_path):
     cfg['model'].setdefault('name', 'lenet')
 
     cfg.setdefault('federated', {})
-    cfg['federated'].setdefault('rounds', 10)
+    cfg['federated'].setdefault('rounds', 100)
     cfg['federated'].setdefault('local_epochs', 2)
     cfg['federated'].setdefault('num_clients', 3)
     cfg['federated'].setdefault('batch_size', 32)
     cfg['federated'].setdefault('samples_per_client', None)
+    cfg['federated'].setdefault('server_learning_rate', 0.01)
+    cfg['federated'].setdefault('learning_rate_decay', {})
+    cfg['federated']['learning_rate_decay'].setdefault('type', 'constant')
+    cfg['federated']['learning_rate_decay'].setdefault('rate', 1.0)
+    cfg['federated']['learning_rate_decay'].setdefault('steps', 1)
+    cfg['federated']['learning_rate_decay'].setdefault('min_learning_rate', 0.0)
 
     cfg.setdefault('crypto', {})
     cfg['crypto'].setdefault('poly_modulus_degree', 8192)
@@ -158,6 +165,75 @@ def print_mode_summary(mode, plain_b, enc_b, dp_b, hybrid_b, fhe_coordinates, to
             print(f"    [DP] epsilon={epsilon:.4f}, delta={delta:.0e}")
 
 
+def initialize_client_batch_states(clients, seed=42):
+    """This function initializes per-client batch sampling states for FedSGD, including random permutations and cursors for each client's dataset. It returns a shared RNG and a list of batch states corresponding to each client."""
+    rng = np.random.default_rng(seed)
+    batch_states = []
+    for client_x, _ in clients:
+        if len(client_x) == 0:
+            raise ValueError('client dataset cannot be empty for FedSGD')
+        batch_states.append(
+            {
+                'permutation': rng.permutation(len(client_x)),
+                'cursor': 0,
+            }
+        )
+    return rng, batch_states
+
+
+def sample_client_batch(client_x, client_y, batch_size, batch_state, rng):
+    client_size = len(client_x)
+    effective_batch_size = max(1, min(int(batch_size), client_size))
+
+    if batch_state['cursor'] + effective_batch_size > client_size:
+        batch_state['permutation'] = rng.permutation(client_size)
+        batch_state['cursor'] = 0
+
+    batch_indices = batch_state['permutation'][
+        batch_state['cursor'] : batch_state['cursor'] + effective_batch_size
+    ]
+    batch_state['cursor'] += effective_batch_size
+    return client_x[batch_indices], client_y[batch_indices]
+
+
+def unflatten_trainable_vector(flat_vector, trainable_variables):
+    gradient_tensors = []
+    offset = 0
+    for variable in trainable_variables:
+        variable_size = int(np.prod(variable.shape))
+        next_offset = offset + variable_size
+        gradient_slice = flat_vector[offset:next_offset]
+        gradient_tensors.append(
+            tf.reshape(tf.convert_to_tensor(gradient_slice, dtype=tf.float32), variable.shape)
+        )
+        offset = next_offset
+    return gradient_tensors
+
+
+def apply_server_gradient(model, flat_gradient, learning_rate):
+    gradient_tensors = unflatten_trainable_vector(flat_gradient, model.trainable_variables)
+    for variable, gradient in zip(model.trainable_variables, gradient_tensors):
+        variable.assign_sub(tf.cast(learning_rate, variable.dtype) * tf.cast(gradient, variable.dtype))
+
+
+def compute_server_learning_rate(base_learning_rate, round_index, decay_cfg):
+    decay_type = str(decay_cfg.get('type', 'constant')).lower()
+    decay_rate = float(decay_cfg.get('rate', 1.0))
+    decay_steps = max(1, int(decay_cfg.get('steps', 1)))
+    min_learning_rate = max(0.0, float(decay_cfg.get('min_learning_rate', 0.0)))
+
+    if decay_type == 'constant':
+        learning_rate = base_learning_rate
+    elif decay_type == 'step':
+        learning_rate = base_learning_rate * (decay_rate ** (round_index // decay_steps))
+    elif decay_type == 'exponential':
+        learning_rate = base_learning_rate * (decay_rate ** (round_index / decay_steps))
+    else:
+        raise ValueError(f'Unsupported learning rate decay type: {decay_type}')
+
+    return max(min_learning_rate, float(learning_rate))
+
+
 def main():
     args = parse_args()
     config_path = os.path.abspath(args.config)
@@ -166,8 +242,11 @@ def main():
     benchmark_mode = benchmark_cfg.get('mode', 'hybrid')
     selective_cfg = cfg['selective_encryption']
     local_batch_size = cfg['federated'].get('batch_size', 32)
-    stats_num_samples = selective_cfg.get('stats_num_samples', 64)
-    stats_batch_size = selective_cfg.get('stats_batch_size', 16)
+    server_learning_rate = cfg['federated'].get(
+        'server_learning_rate',
+        selective_cfg.get('dp_learning_rate', 0.01),
+    )
+    lr_decay_cfg = cfg['federated'].get('learning_rate_decay', {})
     coordinate_plot_frequency = selective_cfg.get('coordinate_plot_frequency', 0)
 
     print(f"[Init] Setting up {benchmark_mode} benchmark from {config_path}...")
@@ -196,14 +275,18 @@ def main():
     print(f"[Metrics] Saving benchmark CSVs under {benchmark_log['run_dir']}")
 
     global_model = build_model(cfg['model']['name'])
-    initial_weights = global_model.get_weights()
-    _, global_weights_shapes = flatten_weights(initial_weights)
+    _, client_batch_states = initialize_client_batch_states(clients)
 
     # Main Federated Loop Simulation
     for r in range(cfg['federated']['rounds']):
+        current_server_learning_rate = compute_server_learning_rate(
+            server_learning_rate,
+            r,
+            lr_decay_cfg,
+        )
         print(f"\n================ COMMUNICATION ROUND {r+1}/{cfg['federated']['rounds']} ================")
+        print(f"[Round] Server learning rate: {current_server_learning_rate:.6f}")
         round_start = time.perf_counter()
-        global_flat, _ = flatten_weights(global_model.get_weights())
         client_updates = []
         round_plaintext_bytes = 0
         round_encrypted_bytes = 0
@@ -218,78 +301,70 @@ def main():
             local_model.set_weights(global_model.get_weights())
             print(f"    [Client {i+1}] Loaded global model state with {client_sizes[i]} local samples.")
 
+            x_batch, y_batch = sample_client_batch(
+                clients[i][0],
+                clients[i][1],
+                local_batch_size,
+                client_batch_states[i],
+                _,
+            )
+            print(f"    [Client {i+1}] Sampled batch of {len(x_batch)} examples for FedSGD.")
+
             gradient_stats = None
             selected_indices = np.array([], dtype=int)
 
-            # Local epoch fitting
+            # One-batch client gradient computation
             client_train_start = time.perf_counter()
             if benchmark_mode == 'full_dp':
-                print(f"    [Client {i+1}] Training with strict DP-SGD optimizer...")
-                train_with_dp_sgd(
+                print(f"    [Client {i+1}] Computing strict DP-SGD batch gradient...")
+                gradient_result = compute_dp_sgd_batch_gradient(
                     local_model,
-                    clients[i][0],
-                    clients[i][1],
-                    epochs=cfg['federated']['local_epochs'],
-                    batch_size=local_batch_size,
+                    x_batch,
+                    y_batch,
                     clipping_norm=selective_cfg['clipping_threshold'],
                     noise_std=selective_cfg['dp_sigma'],
                     learning_rate=selective_cfg['dp_learning_rate'],
                 )
             elif benchmark_mode == 'hybrid':
                 print(
-                    f"    [Client {i+1}] Training with micro-batch hybrid DP heuristic "
-                    f"and selecting encrypted coordinates from each batch..."
+                    f"    [Client {i+1}] Computing hybrid selective-DP batch gradient "
+                    f"with micro-batch statistics..."
                 )
-                hybrid_result = train_with_hybrid_selective_dp(
+                gradient_result = compute_hybrid_selective_batch_gradient(
                     local_model,
-                    clients[i][0],
-                    clients[i][1],
-                    epochs=cfg['federated']['local_epochs'],
-                    batch_size=local_batch_size,
+                    x_batch,
+                    y_batch,
                     clipping_norm=selective_cfg['clipping_threshold'],
                     noise_std=selective_cfg['dp_sigma'],
                     num_windows=selective_cfg['num_windows'],
                     poly_mod_degree=cfg['crypto']['poly_modulus_degree'],
                     microbatch_size=selective_cfg['microbatch_size'],
-                    learning_rate=selective_cfg['dp_learning_rate'],
                 )
                 gradient_stats = {
-                    'num_samples': hybrid_result['num_samples'],
-                    'mean': hybrid_result['mean'],
-                    'mean_abs': hybrid_result['mean_abs'],
-                    'variance': hybrid_result['variance'],
+                    'num_samples': gradient_result['num_samples'],
+                    'mean': gradient_result['mean'],
+                    'mean_abs': gradient_result['mean_abs'],
+                    'variance': gradient_result['variance'],
                 }
-                selected_indices = hybrid_result['selected_indices']
+                selected_indices = gradient_result['selected_indices']
                 print(
-                    f"    [Client {i+1}] Tracked {len(hybrid_result['batch_windows'])} batch window selections, "
+                    f"    [Client {i+1}] Tracked {len(gradient_result['batch_windows'])} batch window selections, "
                     f"covering {len(selected_indices)} unique encrypted coordinates."
                 )
             else:
-                print(f"    [Client {i+1}] Training with standard local optimizer...")
-                local_model.fit(
-                    clients[i][0], clients[i][1],
-                    epochs=cfg['federated']['local_epochs'],
-                    batch_size=local_batch_size, verbose=0
+                print(f"    [Client {i+1}] Computing plaintext batch gradient...")
+                gradient_result = compute_batch_gradient(
+                    local_model,
+                    x_batch,
+                    y_batch,
                 )
             client_train_time = time.perf_counter() - client_train_start
-            print(f"    [Client {i+1}] Local training finished in {client_train_time:.2f}s.")
+            print(f"    [Client {i+1}] Batch gradient ready in {client_train_time:.2f}s.")
 
-            client_test_loss, client_test_acc = local_model.evaluate(
-                client_test_sets[i][0],
-                client_test_sets[i][1],
-                verbose=0,
-            )
-            print(
-                f"    [Client {i+1}] Local test evaluation: "
-                f"Acc={client_test_acc:.4f}, Loss={client_test_loss:.4f}"
-            )
-
-            # Hybrid selective-encryption payload construction on the local update.
-            flat_local, _ = flatten_weights(local_model.get_weights())
-            local_update = flat_local - global_flat
+            client_gradient = gradient_result['gradient']
             fhe_values, dp_vector, selected_indices, mask = build_client_update_payload(
                 benchmark_mode,
-                local_update,
+                client_gradient,
                 selected_indices=selected_indices,
             )
             encrypted_payloads = encrypt_selected_update(
@@ -306,7 +381,7 @@ def main():
             plain_b, enc_b, dp_b, hybrid_b = calculate_mixed_serialized_sizes(
                 encrypted_payloads,
                 dp_vector,
-                local_update,
+                client_gradient,
             )
             round_plaintext_bytes += plain_b
             round_encrypted_bytes += enc_b
@@ -346,7 +421,7 @@ def main():
                 {
                     'encrypted_payloads': encrypted_payloads,
                     'dp_vector': dp_vector,
-                    'vector_length': len(local_update),
+                    'vector_length': len(client_gradient),
                 }
             )
 
@@ -376,20 +451,19 @@ def main():
         print("  Aggregating updates at centralized global orchestrator server node...")
         aggregation_start = time.perf_counter()
         scaled_updates = [
-            scale_mixed_update(update, client_size / total_client_samples)
-            for update, client_size in zip(client_updates, client_sizes)
+            scale_mixed_update(update, 1.0 / len(client_updates))
+            for update in client_updates
         ]
         aggregated_payloads, aggregated_dp = aggregate_mixed_updates(scaled_updates)
         aggregation_time = time.perf_counter() - aggregation_start
 
-        # Update global parameters state from the aggregated local delta.
-        aggregated_update = decrypt_mixed_update(
+        # Update global model parameters from the averaged communicated gradient.
+        aggregated_gradient = decrypt_mixed_update(
             aggregated_payloads,
             aggregated_dp,
-            len(global_flat),
+            len(client_updates[0]['dp_vector']),
         )
-        updated_global_flat = global_flat + aggregated_update
-        global_model.set_weights(unflatten_weights(updated_global_flat, global_weights_shapes))
+        apply_server_gradient(global_model, aggregated_gradient, current_server_learning_rate)
 
         # Evaluate performance accuracy metrics against unseen holdout dataset matrices
         evaluation_start = time.perf_counter()
@@ -402,6 +476,7 @@ def main():
             {
                 'run_id': benchmark_log['run_id'],
                 'round': r + 1,
+                'server_learning_rate': round(float(current_server_learning_rate), 10),
                 'accuracy': round(float(acc), 6),
                 'loss': round(float(loss), 6),
                 'round_time_sec': round(round_time, 6),
@@ -413,7 +488,10 @@ def main():
                 'hybrid_payload_bytes': round_hybrid_bytes,
                 'mean_fhe_coordinates': round(float(np.mean(fhe_coordinate_counts)), 6),
                 'mean_dp_coordinates': round(float(np.mean(dp_coordinate_counts)), 6),
-                'mean_fhe_fraction': round(float(np.mean(np.array(fhe_coordinate_counts) / len(global_flat))), 6),
+                'mean_fhe_fraction': round(
+                    float(np.mean(np.array(fhe_coordinate_counts) / len(client_updates[0]['dp_vector']))),
+                    6,
+                ),
                 'encrypted_payload_count': len(aggregated_payloads),
             }
         )
