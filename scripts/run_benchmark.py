@@ -211,9 +211,19 @@ def unflatten_trainable_vector(flat_vector, trainable_variables):
 
 
 def apply_server_gradient(model, flat_gradient, learning_rate):
+    """
+    Apply the aggregated gradient to the model using Adam optimizer if provided, otherwise SGD.
+    If model.optimizer is set and has 'apply_gradients', use it (e.g., Adam or other Keras optimizer).
+    Otherwise, fall back to manual SGD update.
+    """
     gradient_tensors = unflatten_trainable_vector(flat_gradient, model.trainable_variables)
-    for variable, gradient in zip(model.trainable_variables, gradient_tensors):
-        variable.assign_sub(tf.cast(learning_rate, variable.dtype) * tf.cast(gradient, variable.dtype))
+    # Try to use model.optimizer if available and has apply_gradients
+    optimizer = getattr(model, 'optimizer', None)
+    if optimizer is not None and hasattr(optimizer, 'apply_gradients'):
+        optimizer.apply_gradients(zip(gradient_tensors, model.trainable_variables))
+    else:
+        for variable, gradient in zip(model.trainable_variables, gradient_tensors):
+            variable.assign_sub(tf.cast(learning_rate, variable.dtype) * tf.cast(gradient, variable.dtype))
 
 
 def compute_server_learning_rate(base_learning_rate, round_index, decay_cfg):
