@@ -1,21 +1,21 @@
 benchmark:
   mode: full_fhe
 model:
-  name: lenet
+  name: vgg_small
 federated:
   rounds: 500
   local_epochs: 3
-  num_clients: 3
+  num_clients: 2
   batch_size: 256
   samples_per_client:
-  server_learning_rate: 0.1
+  server_learning_rate: 0.05
   learning_rate_decay:
     type: step
-    rate: 0.5 # 1.0 means no decay
-    steps: 100  # number of rounds after which to apply decay
+    rate: 0.5  # 1.0 means no decay
+    steps: 50  # number of rounds after which to apply decay
     min_learning_rate: 0.0
 crypto:
-  poly_modulus_degree: 8192
+  poly_modulus_degree: 8192 #poly_modulus_degree/2 -> number of available slots
   scale_power: 40
 selective_encryption:
   num_windows: 0

@@ -1,18 +1,18 @@
 benchmark:
   mode: non_private
 model:
-  name: resnet_small
+  name: vgg_small
 federated:
   rounds: 500
   local_epochs: 1
   num_clients: 2
   batch_size: 256
   samples_per_client:
-  server_learning_rate: 0.1
+  server_learning_rate: 0.05
   learning_rate_decay:
     type: step
     rate: 0.5
-    steps: 100
+    steps: 50
     min_learning_rate: 0.0
 crypto:
   poly_modulus_degree: 8192
